@@ -1,0 +1,26 @@
+# ── Sensitive / secrets ───────────────────────────────────────────
+config/settings.json
+.env
+*.env
+secrets.*
+
+# ── Runtime files ─────────────────────────────────────────────────
+KILL_SWITCH
+data/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ──────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── IDE / OS ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
