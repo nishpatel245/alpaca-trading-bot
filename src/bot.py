@@ -12,6 +12,7 @@ from src.broker import BrokerClient
 from src.data_fetcher import get_bars
 from src.strategy import get_strategy
 from src.signal_filter import apply as filter_signal
+from src.news_scanner import get_sentiment, get_confidence_multiplier
 from src.notifier import Notifier
 from src.logger_setup import setup_logger
 
@@ -145,10 +146,19 @@ class TradingBot:
         if not risk_manager.all_checks_pass(signal, symbol, equity, pos_count, self.cfg, self.notifier):
             return
 
+        # News multiplier scales position size — never blocks the trade
+        sentiment        = get_sentiment(symbol)
+        news_multiplier  = get_confidence_multiplier(sentiment["label"])
+        logger.info(
+            f"{symbol}: news={sentiment['label']} (score={sentiment['score']:+.3f}) "
+            f"-> size multiplier {news_multiplier:.2f}x"
+        )
+
         trade_executor.execute_signal(
             broker=self.broker, symbol=symbol, signal=signal,
             price=price, equity=equity, cfg=self.cfg,
             strategy_name=group["strategy"].name, notifier=self.notifier,
+            news_multiplier=news_multiplier,
         )
 
     def _send_daily_summary_if_needed(self) -> None:

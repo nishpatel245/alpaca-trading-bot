@@ -47,7 +47,7 @@ def check_max_positions(current_positions: int, max_positions: int) -> bool:
     return True
 
 
-def calculate_position_size(equity: float, price: float, risk_cfg: dict) -> int:
+def calculate_position_size(equity: float, price: float, risk_cfg: dict, news_multiplier: float = 1.0) -> int:
     """
     Returns number of whole shares to buy based on risk settings.
 
@@ -67,8 +67,8 @@ def calculate_position_size(equity: float, price: float, risk_cfg: dict) -> int:
     if stop_loss_distance <= 0:
         return 0
 
-    shares_by_risk   = int(risk_dollars / stop_loss_distance)
-    shares_by_cap    = int(max_position_value / price)
+    shares_by_risk   = int((risk_dollars / stop_loss_distance) * news_multiplier)
+    shares_by_cap    = int((max_position_value / price) * news_multiplier)
     shares           = min(shares_by_risk, shares_by_cap)
 
     logger.debug(

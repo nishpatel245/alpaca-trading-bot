@@ -132,17 +132,26 @@ def is_bearish(label: str) -> bool:
     return label in ("bearish", "strong_bearish")
 
 
-def confirms_direction(signal: str, label: str) -> bool:
+def get_confidence_multiplier(label: str) -> float:
     """
-    Returns True if sentiment does NOT conflict with the trade direction.
+    Returns a position size multiplier based on news sentiment.
+    News never blocks a trade — it only scales conviction up or down.
 
-    Neutral news = allowed (no strong opinion either way).
-    Only hard conflicts are blocked:
-      BUY  + bearish/strong_bearish  → blocked
-      SELL + bullish/strong_bullish  → blocked
+      Strong bullish → 1.25x (high confidence, bigger size)
+      Bullish        → 1.00x (normal size)
+      Neutral        → 0.85x (slightly cautious)
+      Bearish        → 0.70x (trade but smaller)
+      Strong bearish → 0.55x (trade minimum size)
     """
-    if signal == "BUY"  and is_bearish(label):
-        return False
-    if signal == "SELL" and is_bullish(label):
-        return False
+    return {
+        "strong_bullish": 1.25,
+        "bullish":        1.00,
+        "neutral":        0.85,
+        "bearish":        0.70,
+        "strong_bearish": 0.55,
+    }.get(label, 1.0)
+
+
+def confirms_direction(signal: str, label: str) -> bool:
+    """Kept for backwards compatibility — always returns True (news no longer blocks)."""
     return True

@@ -115,7 +115,8 @@ def close_position(broker, symbol: str, strategy_name: str, notifier=None) -> bo
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def execute_signal(broker, symbol: str, signal: str, price: float,
-                   equity: float, cfg: dict, strategy_name: str, notifier=None) -> None:
+                   equity: float, cfg: dict, strategy_name: str, notifier=None,
+                   news_multiplier: float = 1.0) -> None:
     """
     Route the signal to the correct action based on current position state.
 
@@ -130,18 +131,18 @@ def execute_signal(broker, symbol: str, signal: str, price: float,
 
     if signal == "BUY":
         if pos_qty < 0:
-            close_position(broker, symbol, strategy_name, notifier)   # cover short first
+            close_position(broker, symbol, strategy_name, notifier)
         elif pos_qty == 0:
-            qty = risk_manager.calculate_position_size(equity, price, risk_cfg)
+            qty = risk_manager.calculate_position_size(equity, price, risk_cfg, news_multiplier)
             open_long(broker, symbol, qty, price, risk_cfg, strategy_name, notifier)
         else:
             logger.debug(f"{symbol}: already long, skipping BUY")
 
     elif signal == "SELL":
         if pos_qty > 0:
-            close_position(broker, symbol, strategy_name, notifier)   # close long first
+            close_position(broker, symbol, strategy_name, notifier)
         elif pos_qty == 0:
-            qty = risk_manager.calculate_position_size(equity, price, risk_cfg)
+            qty = risk_manager.calculate_position_size(equity, price, risk_cfg, news_multiplier)
             open_short(broker, symbol, qty, price, risk_cfg, strategy_name, notifier)
         else:
             logger.debug(f"{symbol}: already short, skipping SELL")
