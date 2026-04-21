@@ -74,9 +74,19 @@ def run_backtest(
     stop_pct    = (_stop_base * _scale) / 100
     target_pct  = (_target_base * _scale) / 100
 
-    # Disable live filters for clean backtest on price action only
-    params["use_news_filter"]      = False
     params["use_structure_filter"] = cfg.get("backtest", {}).get("use_structure_filter", True)
+    use_news = params.get("use_news_filter", False)
+
+    # Pre-fetch current sentiment for each symbol (used as directional gate)
+    sentiment_map = {}
+    if use_news:
+        print("\nFetching live news sentiment for each symbol...")
+        from src.news_scanner import get_sentiment, is_bullish, is_bearish
+        for sym in symbols:
+            s = get_sentiment(sym)
+            sentiment_map[sym] = s
+            print(f"  {sym:<6} : {s['label']:<16} (score={s['score']:+.3f}, articles={s['articles']})")
+        print()
 
     all_trades = []
 
@@ -128,6 +138,14 @@ def run_backtest(
                 if signal == "BUY"  and not struct["bullish_structure"]:
                     signal = None
                 if signal == "SELL" and not struct["bearish_structure"]:
+                    signal = None
+
+            # News gate: block trades that conflict with current sentiment
+            if signal and use_news and symbol in sentiment_map:
+                label = sentiment_map[symbol]["label"]
+                if signal == "BUY"  and not is_bullish(label):
+                    signal = None
+                if signal == "SELL" and not is_bearish(label):
                     signal = None
 
             if signal == "BUY":
