@@ -27,9 +27,8 @@ class TradingBot:
         self.broker   = BrokerClient(api_cfg["key"], api_cfg["secret"], paper=api_cfg.get("paper", True))
         self.notifier = Notifier(notif_cfg.get("clickup_api_key", ""))
 
-        self.interval  = cfg["trading"].get("scan_interval_seconds", 60)
-        self.feed      = cfg["trading"].get("data_feed", "iex")
-        self.timeframe = cfg["trading"].get("bar_timeframe", "15min")
+        self.interval = cfg["trading"].get("scan_interval_seconds", 60)
+        self.feed     = cfg["trading"].get("data_feed", "iex")
 
         # Build group list: [{strategy, params, symbols}, ...]
         self.groups = self._load_groups(cfg)
@@ -48,10 +47,11 @@ class TradingBot:
         groups = []
         for group_name, group_cfg in cfg.get("symbol_groups", {}).items():
             groups.append({
-                "name":     group_name,
-                "symbols":  group_cfg["symbols"],
-                "strategy": get_strategy(group_cfg["strategy"]),
-                "params":   group_cfg["params"],
+                "name":      group_name,
+                "symbols":   group_cfg["symbols"],
+                "strategy":  get_strategy(group_cfg["strategy"]),
+                "params":    group_cfg["params"],
+                "timeframe": group_cfg.get("timeframe", "15min"),
             })
         return groups
 
@@ -118,7 +118,7 @@ class TradingBot:
         df = get_bars(
             self.broker.data_client, symbol,
             lookback_bars=lookback,
-            timeframe_str=self.timeframe,
+            timeframe_str=group["timeframe"],
             feed=self.feed,
         )
 

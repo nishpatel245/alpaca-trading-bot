@@ -63,20 +63,28 @@ def run_backtest(
     if cfg is None:
         cfg = load_config()
 
-    risk_cfg     = cfg["risk"]
-    _tf_scale    = {"1min": 0.15, "5min": 0.25, "15min": 0.35, "30min": 0.5, "1h": 1.0, "1d": 1.0}
-    _scale       = _tf_scale.get(timeframe, 1.0)
-    stop_pct     = (risk_cfg.get("stop_loss_pct", 2.0) * _scale) / 100
-    target_pct   = (risk_cfg.get("take_profit_pct", 4.0) * _scale) / 100
+    risk_cfg  = cfg["risk"]
+    _tf_scale = {"1min": 0.15, "5min": 0.25, "15min": 0.35, "30min": 0.5, "1h": 1.0, "1d": 1.0}
 
-    # Build symbol -> strategy/params map from symbol_groups
+    # Build symbol -> group map (each group carries its own timeframe)
     symbol_group_map = {}
     for group_name, group_cfg in cfg.get("symbol_groups", {}).items():
-        strat  = get_strategy(group_cfg["strategy"])
-        params = group_cfg["params"].copy()
+        strat      = get_strategy(group_cfg["strategy"])
+        params     = group_cfg["params"].copy()
         params["use_structure_filter"] = cfg.get("backtest", {}).get("use_structure_filter", True)
+        group_tf   = group_cfg.get("timeframe", timeframe)  # use group timeframe, fallback to arg
+        _scale     = _tf_scale.get(group_tf, 1.0)
+        group_stop    = (risk_cfg.get("stop_loss_pct", 2.0) * _scale) / 100
+        group_target  = (risk_cfg.get("take_profit_pct", 4.0) * _scale) / 100
         for sym in group_cfg["symbols"]:
-            symbol_group_map[sym] = {"strategy": strat, "params": params, "name": group_name}
+            symbol_group_map[sym] = {
+                "strategy":  strat,
+                "params":    params,
+                "name":      group_name,
+                "timeframe": group_tf,
+                "stop_pct":  group_stop,
+                "target_pct": group_target,
+            }
 
     # Fallback for symbols not in any group
     _fallback_params = {"use_structure_filter": False, "use_news_filter": False,
@@ -99,16 +107,20 @@ def run_backtest(
     all_trades = []
 
     for symbol in symbols:
-        logger.info(f"Backtesting {symbol} | {days}d | {timeframe}")
-        df = _download(symbol, days, timeframe)
+        group      = symbol_group_map.get(symbol, {"strategy": get_strategy("combined"),
+                                                    "params": _fallback_params, "name": "default",
+                                                    "timeframe": timeframe, "stop_pct": 0.02, "target_pct": 0.04})
+        sym_tf     = group["timeframe"]
+        stop_pct   = group["stop_pct"]
+        target_pct = group["target_pct"]
+
+        logger.info(f"Backtesting {symbol} | {days}d | {sym_tf} [{group['name']}]")
+        df = _download(symbol, days, sym_tf)
 
         if df.empty or len(df) < 50:
             logger.warning(f"{symbol}: insufficient data")
             continue
 
-        # Get this symbol's strategy and params from its group
-        group    = symbol_group_map.get(symbol, {"strategy": get_strategy("combined"),
-                                                  "params": _fallback_params, "name": "default"})
         strat    = group["strategy"]
         s_params = group["params"]
         min_bars = s_params.get("bars_lookback", 100)
@@ -125,20 +137,20 @@ def run_backtest(
                 if position["side"] == "long":
                     if price <= position["stop"]:
                         pnl = (position["stop"] - position["entry"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "long", group["name"]))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", sym_tf, "long", group["name"]))
                         position = None
                     elif price >= position["target"]:
                         pnl = (position["target"] - position["entry"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "long", group["name"]))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", sym_tf, "long", group["name"]))
                         position = None
                 else:  # short
                     if price >= position["stop"]:
                         pnl = (position["entry"] - position["stop"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "short", group["name"]))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", sym_tf, "short", group["name"]))
                         position = None
                     elif price <= position["target"]:
                         pnl = (position["entry"] - position["target"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "short", group["name"]))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", sym_tf, "short", group["name"]))
                         position = None
 
             if position:
@@ -185,7 +197,7 @@ def run_backtest(
                 pnl = (last_price - position["entry"]) / position["entry"]
             else:
                 pnl = (position["entry"] - last_price) / position["entry"]
-            all_trades.append(_trade_row(symbol, position["entry"], last_price, pnl, "open_at_end", timeframe, position["side"], group["name"]))
+            all_trades.append(_trade_row(symbol, position["entry"], last_price, pnl, "open_at_end", sym_tf, position["side"], group["name"]))
 
     if not all_trades:
         logger.info("No trades generated in backtest.")
@@ -238,7 +250,8 @@ def _print_report(df: pd.DataFrame, days: int, timeframe: str) -> None:
     print("\nBy strategy group:")
     for grp_name, grp in df.groupby("group"):
         wr = len(grp[grp["pnl_pct"] > 0]) / len(grp) * 100
-        print(f"  [{grp_name}]  trades={len(grp)}  win={wr:.0f}%  return={grp['pnl_pct'].sum():+.2f}%")
+        tf = grp["timeframe"].iloc[0]
+        print(f"  [{grp_name:<8}] {tf:<6}  trades={len(grp)}  win={wr:.0f}%  return={grp['pnl_pct'].sum():+.2f}%")
 
     print("\nBy symbol:")
     for sym, grp in df.groupby("symbol"):
