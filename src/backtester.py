@@ -36,11 +36,11 @@ INTERVAL_MAP = {
 def _download(symbol: str, days: int, interval: str) -> pd.DataFrame:
     tf  = INTERVAL_MAP.get(interval, "1h")
     end = datetime.now()
-    # yfinance caps intraday history: 7d for 1m, 60d for 1h
+    # yfinance caps intraday history: 7d for 1m, 730d for 1h
     if tf in ("1m", "2m", "5m", "15m", "30m"):
         days = min(days, 7)
     elif tf in ("1h", "90m"):
-        days = min(days, 60)
+        days = min(days, 730)
 
     start = end - timedelta(days=days)
     df = yf.download(symbol, start=start, end=end, interval=tf, progress=False, auto_adjust=True)
