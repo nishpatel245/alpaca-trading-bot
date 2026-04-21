@@ -133,9 +133,16 @@ def is_bearish(label: str) -> bool:
 
 
 def confirms_direction(signal: str, label: str) -> bool:
-    """Returns True if sentiment confirms the trade direction."""
-    if signal == "BUY"  and is_bullish(label):
-        return True
-    if signal == "SELL" and is_bearish(label):
-        return True
-    return False
+    """
+    Returns True if sentiment does NOT conflict with the trade direction.
+
+    Neutral news = allowed (no strong opinion either way).
+    Only hard conflicts are blocked:
+      BUY  + bearish/strong_bearish  → blocked
+      SELL + bullish/strong_bullish  → blocked
+    """
+    if signal == "BUY"  and is_bearish(label):
+        return False
+    if signal == "SELL" and is_bullish(label):
+        return False
+    return True
