@@ -73,7 +73,7 @@ def calculate_position_size(equity: float, price: float, risk_cfg: dict) -> int:
 
     logger.debug(
         f"Position size: equity={equity:.0f}, price={price:.2f}, "
-        f"risk_shares={shares_by_risk}, cap_shares={shares_by_cap} → {shares} shares"
+        f"risk_shares={shares_by_risk}, cap_shares={shares_by_cap} -> {shares} shares"
     )
     return max(shares, 0)
 
