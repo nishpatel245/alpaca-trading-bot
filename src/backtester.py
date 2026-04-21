@@ -63,19 +63,27 @@ def run_backtest(
     if cfg is None:
         cfg = load_config()
 
-    strategy    = get_strategy(cfg["strategy"]["name"])
-    params      = cfg["strategy"]["params"].copy()
-    risk_cfg    = cfg["risk"]
-    # Scale stop/target to the timeframe — tighter for intraday bars
-    _stop_base   = risk_cfg.get("stop_loss_pct", 2.0)
-    _target_base = risk_cfg.get("take_profit_pct", 4.0)
+    risk_cfg     = cfg["risk"]
     _tf_scale    = {"1min": 0.15, "5min": 0.25, "15min": 0.35, "30min": 0.5, "1h": 1.0, "1d": 1.0}
     _scale       = _tf_scale.get(timeframe, 1.0)
-    stop_pct    = (_stop_base * _scale) / 100
-    target_pct  = (_target_base * _scale) / 100
+    stop_pct     = (risk_cfg.get("stop_loss_pct", 2.0) * _scale) / 100
+    target_pct   = (risk_cfg.get("take_profit_pct", 4.0) * _scale) / 100
 
-    params["use_structure_filter"] = cfg.get("backtest", {}).get("use_structure_filter", True)
-    use_news = params.get("use_news_filter", False)
+    # Build symbol -> strategy/params map from symbol_groups
+    symbol_group_map = {}
+    for group_name, group_cfg in cfg.get("symbol_groups", {}).items():
+        strat  = get_strategy(group_cfg["strategy"])
+        params = group_cfg["params"].copy()
+        params["use_structure_filter"] = cfg.get("backtest", {}).get("use_structure_filter", True)
+        for sym in group_cfg["symbols"]:
+            symbol_group_map[sym] = {"strategy": strat, "params": params, "name": group_name}
+
+    # Fallback for symbols not in any group
+    _fallback_params = {"use_structure_filter": False, "use_news_filter": False,
+                        "fast_ma_period": 9, "slow_ma_period": 21, "rsi_period": 14,
+                        "rsi_oversold": 35, "rsi_overbought": 65, "bars_lookback": 100}
+
+    use_news = any(g["params"].get("use_news_filter", False) for g in symbol_group_map.values())
 
     # Pre-fetch current sentiment for each symbol (used as directional gate)
     sentiment_map = {}
@@ -98,9 +106,14 @@ def run_backtest(
             logger.warning(f"{symbol}: insufficient data")
             continue
 
-        min_bars = params.get("bars_lookback", 100)
-        position = None
-        # position = {"side": "long"|"short", "entry": float, "stop": float, "target": float}
+        # Get this symbol's strategy and params from its group
+        group    = symbol_group_map.get(symbol, {"strategy": get_strategy("combined"),
+                                                  "params": _fallback_params, "name": "default"})
+        strat    = group["strategy"]
+        s_params = group["params"]
+        min_bars = s_params.get("bars_lookback", 100)
+
+        position = None  # {"side": "long"|"short", "entry": float, "stop": float, "target": float}
 
         for i in range(min_bars, len(df)):
             window = df.iloc[: i + 1]
@@ -112,29 +125,29 @@ def run_backtest(
                 if position["side"] == "long":
                     if price <= position["stop"]:
                         pnl = (position["stop"] - position["entry"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "long"))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "long", group["name"]))
                         position = None
                     elif price >= position["target"]:
                         pnl = (position["target"] - position["entry"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "long"))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "long", group["name"]))
                         position = None
                 else:  # short
                     if price >= position["stop"]:
                         pnl = (position["entry"] - position["stop"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "short"))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "short", group["name"]))
                         position = None
                     elif price <= position["target"]:
                         pnl = (position["entry"] - position["target"]) / position["entry"]
-                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "short"))
+                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "short", group["name"]))
                         position = None
 
             if position:
                 continue  # still in a trade
 
-            signal = strategy.generate_signal(window, params)
+            signal = strat.generate_signal(window, s_params)
 
-            if signal and params.get("use_structure_filter", True):
-                struct = market_structure.analyse(window, params)
+            if signal and s_params.get("use_structure_filter", True):
+                struct = market_structure.analyse(window, s_params)
                 if signal == "BUY"  and not struct["bullish_structure"]:
                     signal = None
                 if signal == "SELL" and not struct["bearish_structure"]:
@@ -172,7 +185,7 @@ def run_backtest(
                 pnl = (last_price - position["entry"]) / position["entry"]
             else:
                 pnl = (position["entry"] - last_price) / position["entry"]
-            all_trades.append(_trade_row(symbol, position["entry"], last_price, pnl, "open_at_end", timeframe, position["side"]))
+            all_trades.append(_trade_row(symbol, position["entry"], last_price, pnl, "open_at_end", timeframe, position["side"], group["name"]))
 
     if not all_trades:
         logger.info("No trades generated in backtest.")
@@ -186,8 +199,9 @@ def run_backtest(
     return results
 
 
-def _trade_row(symbol, entry, exit_price, pnl_pct, exit_reason, timeframe, side="long") -> dict:
+def _trade_row(symbol, entry, exit_price, pnl_pct, exit_reason, timeframe, side="long", group="") -> dict:
     return {
+        "group":       group,
         "symbol":      symbol,
         "side":        side,
         "entry":       round(entry, 4),
@@ -221,10 +235,16 @@ def _print_report(df: pd.DataFrame, days: int, timeframe: str) -> None:
     print(f"  Total return   : {total_ret:+.2f}% (sum of all trades)")
     print("=" * 55)
 
+    print("\nBy strategy group:")
+    for grp_name, grp in df.groupby("group"):
+        wr = len(grp[grp["pnl_pct"] > 0]) / len(grp) * 100
+        print(f"  [{grp_name}]  trades={len(grp)}  win={wr:.0f}%  return={grp['pnl_pct'].sum():+.2f}%")
+
     print("\nBy symbol:")
     for sym, grp in df.groupby("symbol"):
-        wr = len(grp[grp["pnl_pct"] > 0]) / len(grp) * 100
-        print(f"  {sym:<6}  trades={len(grp)}  win={wr:.0f}%  return={grp['pnl_pct'].sum():+.2f}%")
+        wr  = len(grp[grp["pnl_pct"] > 0]) / len(grp) * 100
+        g   = grp["group"].iloc[0]
+        print(f"  {sym:<6} [{g:<14}]  trades={len(grp)}  win={wr:.0f}%  return={grp['pnl_pct'].sum():+.2f}%")
     print()
 
 
