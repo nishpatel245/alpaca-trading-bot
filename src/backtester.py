@@ -36,9 +36,11 @@ INTERVAL_MAP = {
 def _download(symbol: str, days: int, interval: str) -> pd.DataFrame:
     tf  = INTERVAL_MAP.get(interval, "1h")
     end = datetime.now()
-    # yfinance caps intraday history: 7d for 1m, 730d for 1h
-    if tf in ("1m", "2m", "5m", "15m", "30m"):
+    # yfinance intraday history limits
+    if tf in ("1m", "2m"):
         days = min(days, 7)
+    elif tf in ("5m", "15m", "30m"):
+        days = min(days, 60)
     elif tf in ("1h", "90m"):
         days = min(days, 730)
 
@@ -64,8 +66,13 @@ def run_backtest(
     strategy    = get_strategy(cfg["strategy"]["name"])
     params      = cfg["strategy"]["params"].copy()
     risk_cfg    = cfg["risk"]
-    stop_pct    = risk_cfg.get("stop_loss_pct", 2.0) / 100
-    target_pct  = risk_cfg.get("take_profit_pct", 4.0) / 100
+    # Scale stop/target to the timeframe — tighter for intraday bars
+    _stop_base   = risk_cfg.get("stop_loss_pct", 2.0)
+    _target_base = risk_cfg.get("take_profit_pct", 4.0)
+    _tf_scale    = {"1min": 0.15, "5min": 0.25, "15min": 0.35, "30min": 0.5, "1h": 1.0, "1d": 1.0}
+    _scale       = _tf_scale.get(timeframe, 1.0)
+    stop_pct    = (_stop_base * _scale) / 100
+    target_pct  = (_target_base * _scale) / 100
 
     # Disable live filters for clean backtest on price action only
     params["use_news_filter"]      = False
@@ -81,8 +88,9 @@ def run_backtest(
             logger.warning(f"{symbol}: insufficient data")
             continue
 
-        min_bars = params.get("bars_lookback", 50)
-        position = None  # {"entry": price, "stop": price, "target": price, "bar": int}
+        min_bars = params.get("bars_lookback", 100)
+        position = None
+        # position = {"side": "long"|"short", "entry": float, "stop": float, "target": float}
 
         for i in range(min_bars, len(df)):
             window = df.iloc[: i + 1]
@@ -91,38 +99,62 @@ def run_backtest(
 
             # Check if existing position hit stop or target
             if position:
-                if price <= position["stop"]:
-                    pnl = (position["stop"] - position["entry"]) / position["entry"]
-                    all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe))
-                    position = None
-                elif price >= position["target"]:
-                    pnl = (position["target"] - position["entry"]) / position["entry"]
-                    all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe))
-                    position = None
+                if position["side"] == "long":
+                    if price <= position["stop"]:
+                        pnl = (position["stop"] - position["entry"]) / position["entry"]
+                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "long"))
+                        position = None
+                    elif price >= position["target"]:
+                        pnl = (position["target"] - position["entry"]) / position["entry"]
+                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "long"))
+                        position = None
+                else:  # short
+                    if price >= position["stop"]:
+                        pnl = (position["entry"] - position["stop"]) / position["entry"]
+                        all_trades.append(_trade_row(symbol, position["entry"], position["stop"], pnl, "stop_loss", timeframe, "short"))
+                        position = None
+                    elif price <= position["target"]:
+                        pnl = (position["entry"] - position["target"]) / position["entry"]
+                        all_trades.append(_trade_row(symbol, position["entry"], position["target"], pnl, "take_profit", timeframe, "short"))
+                        position = None
 
             if position:
-                continue  # already in trade
+                continue  # still in a trade
 
-            # Generate signal
             signal = strategy.generate_signal(window, params)
 
-            # Optionally apply structure filter
-            if signal == "BUY" and params.get("use_structure_filter", True):
+            if signal and params.get("use_structure_filter", True):
                 struct = market_structure.analyse(window, params)
-                if not struct["bullish_structure"]:
+                if signal == "BUY"  and not struct["bullish_structure"]:
+                    signal = None
+                if signal == "SELL" and not struct["bearish_structure"]:
                     signal = None
 
             if signal == "BUY":
                 entry  = price
-                stop   = round(entry * (1 - stop_pct), 4)
-                target = round(entry * (1 + target_pct), 4)
-                position = {"entry": entry, "stop": stop, "target": target, "bar": i}
+                position = {
+                    "side": "long",
+                    "entry":  entry,
+                    "stop":   round(entry * (1 - stop_pct), 4),
+                    "target": round(entry * (1 + target_pct), 4),
+                }
+            elif signal == "SELL":
+                entry  = price
+                position = {
+                    "side": "short",
+                    "entry":  entry,
+                    "stop":   round(entry * (1 + stop_pct), 4),
+                    "target": round(entry * (1 - target_pct), 4),
+                }
 
         # Close any open position at last bar
         if position:
             last_price = float(df.iloc[-1]["close"])
-            pnl = (last_price - position["entry"]) / position["entry"]
-            all_trades.append(_trade_row(symbol, position["entry"], last_price, pnl, "open_at_end", timeframe))
+            if position["side"] == "long":
+                pnl = (last_price - position["entry"]) / position["entry"]
+            else:
+                pnl = (position["entry"] - last_price) / position["entry"]
+            all_trades.append(_trade_row(symbol, position["entry"], last_price, pnl, "open_at_end", timeframe, position["side"]))
 
     if not all_trades:
         logger.info("No trades generated in backtest.")
@@ -136,9 +168,10 @@ def run_backtest(
     return results
 
 
-def _trade_row(symbol, entry, exit_price, pnl_pct, exit_reason, timeframe) -> dict:
+def _trade_row(symbol, entry, exit_price, pnl_pct, exit_reason, timeframe, side="long") -> dict:
     return {
         "symbol":      symbol,
+        "side":        side,
         "entry":       round(entry, 4),
         "exit":        round(exit_price, 4),
         "pnl_pct":     round(pnl_pct * 100, 3),

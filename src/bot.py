@@ -31,9 +31,10 @@ class TradingBot:
         self.strategy = get_strategy(cfg["strategy"]["name"])
         self.params   = cfg["strategy"]["params"]
         self.symbols  = cfg["trading"]["symbols"]
-        self.interval = cfg["trading"].get("scan_interval_seconds", 60)
-        self.feed     = cfg["trading"].get("data_feed", "iex")
-        self.lookback = self.params.get("bars_lookback", 50)
+        self.interval  = cfg["trading"].get("scan_interval_seconds", 60)
+        self.feed      = cfg["trading"].get("data_feed", "iex")
+        self.timeframe = cfg["trading"].get("bar_timeframe", "15min")
+        self.lookback  = self.params.get("bars_lookback", 100)
         self.notifier = Notifier(notif_cfg.get("clickup_api_key", ""))
 
         self._market_was_open = False  # track open/close transitions
@@ -105,6 +106,7 @@ class TradingBot:
             self.broker.data_client,
             symbol,
             lookback_bars=self.lookback,
+            timeframe_str=self.timeframe,
             feed=self.feed,
         )
 
