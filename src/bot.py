@@ -14,6 +14,7 @@ from src import database, risk_manager, trade_executor
 from src.broker import BrokerClient
 from src.data_fetcher import get_bars
 from src.strategy import get_strategy
+from src.signal_filter import apply as filter_signal
 from src.notifier import Notifier
 from src.logger_setup import setup_logger
 
@@ -125,7 +126,13 @@ class TradingBot:
             logger.debug(f"{symbol}: no signal @ {price:.2f}")
             return
 
-        logger.info(f"{symbol}: signal={signal} @ {price:.2f}")
+        logger.info(f"{symbol}: base signal={signal} @ {price:.2f} — running filters")
+
+        # Apply market structure + news filter (sends ClickUp alert if confirmed)
+        signal = filter_signal(signal, symbol, df, self.params, self.notifier)
+
+        if signal is None:
+            return  # filtered out — reason already logged inside filter
 
         if not risk_manager.all_checks_pass(signal, symbol, equity, pos_count, self.cfg, self.notifier):
             return
