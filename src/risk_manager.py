@@ -20,7 +20,7 @@ def kill_switch_active() -> bool:
     return False
 
 
-def check_daily_loss_limit(equity: float, risk_cfg: dict) -> bool:
+def check_daily_loss_limit(equity: float, risk_cfg: dict, notifier=None) -> bool:
     """Returns True (safe to trade) if daily loss is within limit."""
     max_loss_pct = risk_cfg.get("max_daily_loss_pct", 5.0)
     daily = database.get_daily_pnl()
@@ -34,6 +34,8 @@ def check_daily_loss_limit(equity: float, risk_cfg: dict) -> bool:
         logger.warning(
             f"Daily loss limit hit: {loss_pct:.2f}% lost (limit {max_loss_pct}%). No new trades."
         )
+        if notifier:
+            notifier.daily_loss_limit_hit(loss_pct, max_loss_pct)
         return False
     return True
 
@@ -82,16 +84,17 @@ def all_checks_pass(
     equity: float,
     current_position_count: int,
     cfg: dict,
+    notifier=None,
 ) -> bool:
     """Single entry-point: run all pre-trade checks. Returns True only if safe to trade."""
     if kill_switch_active():
         return False
 
-    risk_cfg     = cfg.get("risk", {})
-    trading_cfg  = cfg.get("trading", {})
+    risk_cfg      = cfg.get("risk", {})
+    trading_cfg   = cfg.get("trading", {})
     max_positions = trading_cfg.get("max_open_positions", 5)
 
-    if not check_daily_loss_limit(equity, risk_cfg):
+    if not check_daily_loss_limit(equity, risk_cfg, notifier):
         return False
 
     # Only enforce max positions on new BUY signals, not SELL (always allow closing)
